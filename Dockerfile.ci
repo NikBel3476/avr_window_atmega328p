@@ -18,4 +18,4 @@ COPY --chown=avr-rust:avr-rust . /usr/src/avr_window
 WORKDIR /usr/src/avr_window
 ENV AVR_CPU_FREQUENCY_HZ=16000000
 
-CMD ["cargo", "build", "-Z", "build-std=core", "--target", "avr-atmega128rfa1.json", "--release"]
+CMD ["cargo", "build", "-Z", "build-std=core", "--target", "avr-atmega328p.json", "--release"]
