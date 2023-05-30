@@ -1,0 +1,33 @@
+[package]
+name = "avr_window"
+version = "0.1.0"
+edition = '2021'
+
+[dependencies]
+# ruduino = { git = "https://github.com/NikBel3476/ruduino", branch = "master" }
+ebyte-e32 = { git="https://github.com/barafael/ebyte-e32-rs.git", branch="main" }
+nb = "1.1.0"
+ufmt = "0.2.0"
+panic-halt = "0.2.0"
+embedded-hal = { version = "0.2.7", features = ["unproven"] }
+
+[dependencies.atmega-hal]
+git = "https://github.com/Rahix/avr-hal.git"
+branch = "main"
+features = ["atmega328p"]
+
+[dependencies.arduino-hal]
+git = "https://github.com/Rahix/avr-hal.git"
+branch = "main"
+features = ["arduino-nano"]
+
+[dependencies.avr-device]
+version = "0.5.1"
+features = ["atmega328p"]
+
+[profile.dev]
+panic="abort"
+
+[profile.release]
+lto = true
+panic="abort"

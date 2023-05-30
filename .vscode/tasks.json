@@ -1,0 +1,63 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "cargo",
+            "command": "build",
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "label": "build",
+            "args": [
+                "--target",
+                "avr-atmega328p.json",
+                "-Z",
+                "build-std=core",
+                "--release"
+            ]
+        },
+        {
+            "type": "shell",
+            "command": "avrdude",
+            "label": "flush",
+            "args": [
+                "-patmega328p",
+                "-carduino",
+                "-Pcom5",
+                "-b57600",
+                "-Uflash:w:target/avr-atmega328p/release/avr_window.elf:e"
+            ]
+        },
+        {
+            "type": "shell",
+            "label": "build and flush",
+            "group": "build",
+            "dependsOn": [
+                "build",
+                "flush"
+            ],
+            "dependsOrder": "sequence",
+            "problemMatcher": [
+                "$rustc"
+            ]
+        },
+        {
+            "type": "cargo",
+            "command": "rustc",
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "label": "build with asm",
+            "args": [
+                "--target",
+                "atmega328p.json",
+                "-Z",
+                "build-std=core",
+                "--release",
+                "--",
+                "--emit",
+                "asm"
+            ]
+        }
+    ]
+}
