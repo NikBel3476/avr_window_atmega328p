@@ -406,7 +406,10 @@ pub fn reg_timer(timer1: &TC1) {
 #[avr_device::interrupt(atmega328p)]
 fn TIMER1_COMPA() {
 	unsafe {
-		GLOBAL_TIME_IN_SEC += 1;
+		GLOBAL_TIME_IN_SEC = match GLOBAL_TIME_IN_SEC == 24 * 60 * 60 - 1 {
+			true => 0,
+			false => GLOBAL_TIME_IN_SEC + 1
+		};
 	}
 	unsafe { (*atmega_hal::pac::TC1::PTR).tcnt1.write(|w| w.bits(0)) }
 }
