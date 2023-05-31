@@ -75,6 +75,10 @@ fn main() -> ! {
 	// 		.configure();
 	// });
 
+	let mut receiving_message: [u8; 50] = [0; 50];
+	let mut receiving_message_position = 0;
+	let mut message_received = false;
+
 	let dp = atmega_hal::Peripherals::take().unwrap();
 
 	let pins = atmega_hal::pins!(dp);
@@ -181,11 +185,28 @@ fn main() -> ! {
 		// 	unsafe {
 		// 		(*arduino_hal::pac::PORTF::PTR).portf.write(|w| w.bits(b));
 		// 	}
-			// PORTF::write(b);
+		// PORTF::write(b);
 
 		if let Ok(byte) = serial1.read() {
 			// serial1.write_byte(byte);
-			match byte.to_ascii_lowercase() as char {
+			if !message_received {
+				receiving_message[receiving_message_position] = byte;
+				match receiving_message_position < receiving_message.len() {
+					true => receiving_message_position += 1,
+					false => {
+						receiving_message.fill(0);
+						receiving_message_position = 0;
+						message_received = false;
+					}
+				}
+				if byte.to_ascii_lowercase() as char == ';' {
+					message_received = true;
+				}
+			}
+		}
+
+		if message_received {
+			match receiving_message[0] as char {
 				'o' => unsafe {
 					if WINDOW_IS_CLOSE.load(Ordering::SeqCst) {
 						WINDOW_IS_MOVING.store(true, Ordering::SeqCst);
@@ -209,13 +230,27 @@ fn main() -> ! {
 					}
 				},
 				't' => unsafe {
-						serial1.write_byte('t' as u8);
+					serial1.write_byte('t' as u8);
 					for byte in GLOBAL_TIME_IN_SEC.to_be_bytes() {
+						serial1.write_byte(byte);
+					}
+				},
+				'u' => unsafe {
+					GLOBAL_TIME_IN_SEC = u32::from_be_bytes([
+						receiving_message[1],
+						receiving_message[2],
+						receiving_message[3],
+						receiving_message[4],
+					]);
+					for &byte in b"ok" {
 						serial1.write_byte(byte);
 					}
 				}
 				_ => {}
 			}
+			receiving_message.fill(0);
+			receiving_message_position = 0;
+			message_received = false;
 		}
 
 		// delay_ms(1000);
