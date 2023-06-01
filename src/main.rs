@@ -51,6 +51,8 @@ use panic_halt as _;
 // 	serial0: *mut Usart<Atmega, USART0, Pin<Input, PE0>, Pin<Output, PE1>, MHz16>
 // }
 
+const MESSAGE_SEPARATOR: u8 = ';' as u8;
+
 enum TimeModeActionState {
 	Open,
 	Close
@@ -228,86 +230,81 @@ fn main() -> ! {
 		}
 
 		if message_received {
-			match receiving_message[0] as char {
-				'o' => unsafe { // open window
-					if WINDOW_IS_CLOSE.load(Ordering::SeqCst) {
-						WINDOW_IS_MOVING.store(true, Ordering::SeqCst);
-						engine_direction.set_high();
-						engine_disable.set_low();
-					}
-				},
-				'c' => unsafe { // close window
-					if WINDOW_IS_OPEN.load(Ordering::SeqCst) {
-						WINDOW_IS_MOVING.store(true, Ordering::SeqCst);
-						engine_direction.set_low();
-						engine_disable.set_low();
-					}
-				},
-				's' => unsafe { // get state
-					if WINDOW_IS_OPEN.load(Ordering::SeqCst) && !WINDOW_IS_CLOSE.load(Ordering::SeqCst) {
-						serial1.write_byte('o' as u8);
-					}
-					if !WINDOW_IS_OPEN.load(Ordering::SeqCst) && WINDOW_IS_CLOSE.load(Ordering::SeqCst) {
-						serial1.write_byte('c' as u8);
-					}
-				},
-				't' => unsafe { // get time
-					serial1.write_byte('t' as u8);
-					for byte in GLOBAL_TIME_IN_SEC.to_be_bytes() {
-						serial1.write_byte(byte);
-					}
-				},
-				'u' => unsafe { // update global time
-					GLOBAL_TIME_IN_SEC = u32::from_be_bytes([
-						receiving_message[1],
-						receiving_message[2],
-						receiving_message[3],
-						receiving_message[4],
-					]);
-					for &byte in b"ok" {
-						serial1.write_byte(byte);
-					}
-				},
-				'r' => unsafe { // set time mode
-					TIME_MODE.active_time_in_sec = u32::from_be_bytes([
-						receiving_message[1],
-						receiving_message[2],
-						receiving_message[3],
-						receiving_message[4],
-					]);
-					TIME_MODE.delay_time_in_sec = u32::from_be_bytes([
-						receiving_message[5],
-						receiving_message[6],
-						receiving_message[7],
-						receiving_message[8],
-					]);
-					TIME_MODE.enabled = true;
-					for &byte in b"ok" {
-						serial1.write_byte(byte);
-					}
-				},
-				'd' => unsafe { // disable time mode
-					TIME_MODE.enabled = false;
-					for &byte in b"disable_ok" {
-						serial1.write_byte(byte);
-					}
-				},
-				'e' => unsafe { // enable time mode
-					match TIME_MODE.active_time_in_sec != 0 && TIME_MODE.active_time_in_sec != 0 {
-						true => {
-							TIME_MODE.enabled = true;
-							for &byte in b"enable_ok" {
-								serial1.write_byte(byte);
-							}
+			if let Some(length) = receiving_message.iter().position(|c| c.eq(&MESSAGE_SEPARATOR)) {
+				let message = &receiving_message[0..length];
+				unsafe {
+					if message.starts_with("o".as_bytes()) {
+						if WINDOW_IS_CLOSE.load(Ordering::SeqCst) {
+							WINDOW_IS_MOVING.store(true, Ordering::SeqCst);
+							engine_direction.set_high();
+							engine_disable.set_low();
 						}
-						false => {
-							for &byte in b"enable_err" {
-								serial1.write_byte(byte);
+					} else if message.starts_with("c".as_bytes()) { // close window
+						if WINDOW_IS_OPEN.load(Ordering::SeqCst) {
+							WINDOW_IS_MOVING.store(true, Ordering::SeqCst);
+							engine_direction.set_low();
+							engine_disable.set_low();
+						}
+					} else if message.starts_with("s".as_bytes()) { // get state
+						if WINDOW_IS_OPEN.load(Ordering::SeqCst) && !WINDOW_IS_CLOSE.load(Ordering::SeqCst) {
+							serial1.write_byte('o' as u8);
+						}
+						if !WINDOW_IS_OPEN.load(Ordering::SeqCst) && WINDOW_IS_CLOSE.load(Ordering::SeqCst) {
+							serial1.write_byte('c' as u8);
+						}
+					} else if message.starts_with("t".as_bytes()) { // get time
+						serial1.write_byte('t' as u8);
+						for byte in GLOBAL_TIME_IN_SEC.to_be_bytes() {
+							serial1.write_byte(byte);
+						}
+					} else if message.starts_with("u".as_bytes()) { // update global time
+						GLOBAL_TIME_IN_SEC = u32::from_be_bytes([
+							message[1],
+							message[2],
+							message[3],
+							message[4],
+						]);
+						for &byte in b"ok" {
+							serial1.write_byte(byte);
+						}
+					} else if message.starts_with("r".as_bytes()) { // set time mode
+						TIME_MODE.active_time_in_sec = u32::from_be_bytes([
+							message[1],
+							message[2],
+							message[3],
+							message[4],
+						]);
+						TIME_MODE.delay_time_in_sec = u32::from_be_bytes([
+							message[5],
+							message[6],
+							message[7],
+							message[8],
+						]);
+						TIME_MODE.enabled = true;
+						for &byte in b"ok" {
+							serial1.write_byte(byte);
+						}
+					} else if message.starts_with("d".as_bytes()) { // disable time mode
+						TIME_MODE.enabled = false;
+						for &byte in b"disable_ok" {
+							serial1.write_byte(byte);
+						}
+					} else if message.starts_with("e".as_bytes()) { // enable time mode
+						match TIME_MODE.active_time_in_sec != 0 && TIME_MODE.active_time_in_sec != 0 {
+							true => {
+								TIME_MODE.enabled = true;
+								for &byte in b"enable_ok" {
+									serial1.write_byte(byte);
+								}
+							}
+							false => {
+								for &byte in b"enable_err" {
+									serial1.write_byte(byte);
+								}
 							}
 						}
 					}
 				}
-				_ => {}
 			}
 			receiving_message.fill(0);
 			receiving_message_position = 0;
