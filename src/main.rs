@@ -5,21 +5,21 @@
 use arduino_hal::{
 	delay_ms,
 	hal::port,
+	pac::{tc1::tccr1b::CS1_A, TC1},
 	port::{mode::Output, Pin},
 	prelude::*,
-	pac::{TC1, tc1::tccr1b::CS1_A}
 };
-use atmega_hal::{usart::BaudrateExt};
+use atmega_hal::{port::PinOps, usart::BaudrateExt};
 use core::{
-	mem,
-	sync::atomic::{AtomicBool, Ordering}, cmp,
+	cmp, mem,
+	sync::atomic::{AtomicBool, Ordering},
 };
 use ebyte_e32::{
 	mode::{Mode, Normal, Program},
 	parameters::{AirBaudRate, Persistence},
 	Ebyte,
 };
-use embedded_hal::{digital::v2::InputPin};
+use embedded_hal::digital::v2::InputPin;
 use nb::block;
 use panic_halt as _;
 // use ruduino::cores::current;
@@ -55,7 +55,7 @@ const MESSAGE_SEPARATOR: u8 = ';' as u8;
 
 enum TimeModeActionState {
 	Open,
-	Close
+	Close,
 }
 
 struct TimeMode {
@@ -64,14 +64,14 @@ struct TimeMode {
 	active_time_offset: u32,
 	delay_time_offset: u32,
 	enabled: bool,
-	action_state: TimeModeActionState
+	action_state: TimeModeActionState,
 }
 
-static mut WINDOW_IS_OPEN: AtomicBool = AtomicBool::new(false);
-static mut WINDOW_IS_CLOSE: AtomicBool = AtomicBool::new(true);
-static mut WINDOW_IS_MOVING: AtomicBool = AtomicBool::new(false);
+static mut WINDOW_IS_OPENED: AtomicBool = AtomicBool::new(false);
+static mut WINDOW_IS_CLOSED: AtomicBool = AtomicBool::new(true);
+static mut WINDOW_IS_OPENING: AtomicBool = AtomicBool::new(false);
+static mut WINDOW_IS_CLOSING: AtomicBool = AtomicBool::new(false);
 // static mut LED: mem::MaybeUninit<Pin<Output, port::PB5>> = mem::MaybeUninit::uninit();
-// static mut GLOBAL_STATE: mem::MaybeUninit<GlobalState> = mem::MaybeUninit::uninit();
 static mut GLOBAL_TIME_IN_SEC: u32 = 0;
 static mut TIME_MODE: TimeMode = TimeMode {
 	active_time_in_sec: 0,
@@ -79,7 +79,7 @@ static mut TIME_MODE: TimeMode = TimeMode {
 	active_time_offset: 0,
 	delay_time_offset: 0,
 	enabled: false,
-	action_state: TimeModeActionState::Open
+	action_state: TimeModeActionState::Open,
 };
 
 #[arduino_hal::entry]
@@ -178,11 +178,11 @@ fn main() -> ! {
 
 	// engine rotation direction
 	// low -> close; high -> open
-	let mut engine_direction = pins.pd2.into_output();
-	engine_direction.set_high();
+	let mut engine_direction_pin = pins.pd2.into_output();
+	engine_direction_pin.set_high();
 
-	let mut engine_disable = pins.pd3.into_output();
-	engine_disable.set_high();
+	let mut engine_inverse_pin = pins.pd3.into_output();
+	engine_inverse_pin.set_high();
 
 	// open/close sensors
 	let close_sensor = pins.pd5.into_floating_input();
@@ -230,67 +230,63 @@ fn main() -> ! {
 		}
 
 		if message_received {
-			if let Some(length) = receiving_message.iter().position(|c| c.eq(&MESSAGE_SEPARATOR)) {
+			if let Some(length) = receiving_message
+				.iter()
+				.position(|c| c.eq(&MESSAGE_SEPARATOR))
+			{
 				let message = &receiving_message[0..length];
 				unsafe {
 					if message.starts_with("o".as_bytes()) {
-						if WINDOW_IS_CLOSE.load(Ordering::SeqCst) {
-							WINDOW_IS_MOVING.store(true, Ordering::SeqCst);
-							engine_direction.set_high();
-							engine_disable.set_low();
+						// open window
+						try_open(&mut engine_inverse_pin, &mut engine_direction_pin);
+					} else if message.starts_with("c".as_bytes()) {
+						// close window
+						try_close(&mut engine_inverse_pin, &mut engine_direction_pin);
+					} else if message.starts_with("s".as_bytes()) {
+						// get state
+						if WINDOW_IS_OPENED.load(Ordering::SeqCst)
+							&& !WINDOW_IS_CLOSED.load(Ordering::SeqCst)
+						{
+							serial1.write_byte(b'o');
 						}
-					} else if message.starts_with("c".as_bytes()) { // close window
-						if WINDOW_IS_OPEN.load(Ordering::SeqCst) {
-							WINDOW_IS_MOVING.store(true, Ordering::SeqCst);
-							engine_direction.set_low();
-							engine_disable.set_low();
+						if !WINDOW_IS_OPENED.load(Ordering::SeqCst)
+							&& WINDOW_IS_CLOSED.load(Ordering::SeqCst)
+						{
+							serial1.write_byte(b'c');
 						}
-					} else if message.starts_with("s".as_bytes()) { // get state
-						if WINDOW_IS_OPEN.load(Ordering::SeqCst) && !WINDOW_IS_CLOSE.load(Ordering::SeqCst) {
-							serial1.write_byte('o' as u8);
-						}
-						if !WINDOW_IS_OPEN.load(Ordering::SeqCst) && WINDOW_IS_CLOSE.load(Ordering::SeqCst) {
-							serial1.write_byte('c' as u8);
-						}
-					} else if message.starts_with("t".as_bytes()) { // get time
-						serial1.write_byte('t' as u8);
+					} else if message.starts_with("t".as_bytes()) {
+						// get time
+						serial1.write_byte(b't');
 						for byte in GLOBAL_TIME_IN_SEC.to_be_bytes() {
 							serial1.write_byte(byte);
 						}
-					} else if message.starts_with("u".as_bytes()) { // update global time
-						GLOBAL_TIME_IN_SEC = u32::from_be_bytes([
-							message[1],
-							message[2],
-							message[3],
-							message[4],
-						]);
+					} else if message.starts_with("u".as_bytes()) {
+						// update global time
+						GLOBAL_TIME_IN_SEC =
+							u32::from_be_bytes([message[1], message[2], message[3], message[4]]);
 						for &byte in b"ok" {
 							serial1.write_byte(byte);
 						}
-					} else if message.starts_with("r".as_bytes()) { // set time mode
-						TIME_MODE.active_time_in_sec = u32::from_be_bytes([
-							message[1],
-							message[2],
-							message[3],
-							message[4],
-						]);
-						TIME_MODE.delay_time_in_sec = u32::from_be_bytes([
-							message[5],
-							message[6],
-							message[7],
-							message[8],
-						]);
+					} else if message.starts_with("r".as_bytes()) {
+						// set time mode
+						TIME_MODE.active_time_in_sec =
+							u32::from_be_bytes([message[1], message[2], message[3], message[4]]);
+						TIME_MODE.delay_time_in_sec =
+							u32::from_be_bytes([message[5], message[6], message[7], message[8]]);
 						TIME_MODE.enabled = true;
 						for &byte in b"ok" {
 							serial1.write_byte(byte);
 						}
-					} else if message.starts_with("d".as_bytes()) { // disable time mode
+					} else if message.starts_with("d".as_bytes()) {
+						// disable time mode
 						TIME_MODE.enabled = false;
 						for &byte in b"disable_ok" {
 							serial1.write_byte(byte);
 						}
-					} else if message.starts_with("e".as_bytes()) { // enable time mode
-						match TIME_MODE.active_time_in_sec != 0 && TIME_MODE.active_time_in_sec != 0 {
+					} else if message.starts_with("e".as_bytes()) {
+						// enable time mode
+						match TIME_MODE.active_time_in_sec != 0 && TIME_MODE.active_time_in_sec != 0
+						{
 							true => {
 								TIME_MODE.enabled = true;
 								for &byte in b"enable_ok" {
@@ -392,41 +388,33 @@ fn main() -> ! {
 			if TIME_MODE.enabled {
 				match TIME_MODE.action_state {
 					TimeModeActionState::Open => {
-						if WINDOW_IS_CLOSE.load(Ordering::SeqCst) {
-							WINDOW_IS_MOVING.store(true, Ordering::SeqCst);
-							engine_direction.set_high();
-							engine_disable.set_low();
-						}
+						try_open(&mut engine_inverse_pin, &mut engine_direction_pin)
 					}
 					TimeModeActionState::Close => {
-						if WINDOW_IS_OPEN.load(Ordering::SeqCst) {
-							WINDOW_IS_MOVING.store(true, Ordering::SeqCst);
-							engine_direction.set_low();
-							engine_disable.set_low();
-						}
+						try_close(&mut engine_inverse_pin, &mut engine_direction_pin)
 					}
 				}
 			}
 
-			if WINDOW_IS_CLOSE.load(Ordering::SeqCst) && open_sensor.is_high() {
+			if WINDOW_IS_OPENING.load(Ordering::SeqCst) && open_sensor.is_high() {
 				delay_ms(10);
 				if open_sensor.is_high() {
-					WINDOW_IS_CLOSE.store(false, Ordering::SeqCst);
-					WINDOW_IS_OPEN.store(true, Ordering::SeqCst);
-					WINDOW_IS_MOVING.store(false, Ordering::SeqCst);
-					engine_disable.set_high();
-					engine_direction.set_high();
+					WINDOW_IS_CLOSED.store(false, Ordering::SeqCst);
+					WINDOW_IS_OPENED.store(true, Ordering::SeqCst);
+					WINDOW_IS_OPENING.store(false, Ordering::SeqCst);
+					engine_inverse_pin.set_high();
+					engine_direction_pin.set_high();
 				}
 			}
 
-			if WINDOW_IS_OPEN.load(Ordering::SeqCst) && close_sensor.is_high() {
+			if WINDOW_IS_CLOSING.load(Ordering::SeqCst) && close_sensor.is_high() {
 				delay_ms(10);
 				if close_sensor.is_high() {
-					WINDOW_IS_OPEN.store(false, Ordering::SeqCst);
-					WINDOW_IS_CLOSE.store(true, Ordering::SeqCst);
-					WINDOW_IS_MOVING.store(false, Ordering::SeqCst);
-					engine_disable.set_high();
-					engine_direction.set_high();
+					WINDOW_IS_OPENED.store(false, Ordering::SeqCst);
+					WINDOW_IS_CLOSED.store(true, Ordering::SeqCst);
+					WINDOW_IS_OPENING.store(false, Ordering::SeqCst);
+					engine_inverse_pin.set_high();
+					engine_direction_pin.set_high();
 				}
 			}
 		}
@@ -436,6 +424,38 @@ fn main() -> ! {
 		// 	PORTF::write(0b0);
 		// 	PORTF::set_mask_raw(b);
 		// }
+	}
+}
+
+pub fn try_open<P1, P2>(
+	engine_inverse_pin: &mut Pin<Output, P1>,
+	engine_direction_pin: &mut Pin<Output, P2>,
+) where
+	P1: PinOps,
+	P2: PinOps,
+{
+	unsafe {
+		if WINDOW_IS_CLOSED.load(Ordering::SeqCst) {
+			engine_direction_pin.set_high();
+			engine_inverse_pin.set_low();
+			WINDOW_IS_OPENING.store(true, Ordering::SeqCst);
+		}
+	}
+}
+
+pub fn try_close<P1, P2>(
+	engine_inverse_pin: &mut Pin<Output, P1>,
+	engine_direction_pin: &mut Pin<Output, P2>,
+) where
+	P1: PinOps,
+	P2: PinOps,
+{
+	unsafe {
+		if WINDOW_IS_OPENED.load(Ordering::SeqCst) {
+			engine_direction_pin.set_low();
+			engine_inverse_pin.set_low();
+			WINDOW_IS_CLOSING.store(true, Ordering::SeqCst);
+		}
 	}
 }
 
@@ -458,23 +478,22 @@ pub fn reg_timer(timer1: &TC1) {
 		CS1_A::PRESCALE_64 => 64,
 		CS1_A::PRESCALE_256 => 256,
 		CS1_A::PRESCALE_1024 => 1024,
-		_ => 1024
-		// CS1_A::NO_CLOCK | CS1_A::EXT_FALLING | CS1_A::EXT_RISING => {
-		// 		uwriteln!(serial, "uhoh, code tried to set the clock source to something other than a static prescaler {}", CLOCK_SOURCE as usize)
-		// 				.void_unwrap();
-		// 		1
-		// }
+		_ => 1024, // CS1_A::NO_CLOCK | CS1_A::EXT_FALLING | CS1_A::EXT_RISING => {
+		           // 		uwriteln!(serial, "uhoh, code tried to set the clock source to something other than a static prescaler {}", CLOCK_SOURCE as usize)
+		           // 				.void_unwrap();
+		           // 		1
+		           // }
 	};
 
 	let ticks = calc_overflow(ATMEGA_CLOCK_FREQUENCY, 1, clock_divisor) as u16;
 
 	timer1.tccr1a.write(|w| w.wgm1().bits(0b00));
 	timer1.tccr1b.write(|w| {
-			w.cs1()
-					//.prescale_256()
-					.variant(CLOCK_SOURCE)
-					.wgm1()
-					.bits(0b01)
+		w.cs1()
+			//.prescale_256()
+			.variant(CLOCK_SOURCE)
+			.wgm1()
+			.bits(0b01)
 	});
 	timer1.ocr1a.write(|w| w.bits(ticks));
 	timer1.timsk1.write(|w| w.ocie1a().set_bit()); //enable this specific interrupt
@@ -485,12 +504,15 @@ fn TIMER1_COMPA() {
 	unsafe {
 		GLOBAL_TIME_IN_SEC = match GLOBAL_TIME_IN_SEC.cmp(&(24 * 60 * 60 - 1)) {
 			cmp::Ordering::Less => GLOBAL_TIME_IN_SEC + 1,
-			_ => 0
+			_ => 0,
 		};
 		if TIME_MODE.enabled {
 			match TIME_MODE.action_state {
 				TimeModeActionState::Open => {
-					TIME_MODE.active_time_offset = match TIME_MODE.active_time_offset.cmp(&TIME_MODE.active_time_in_sec) {
+					TIME_MODE.active_time_offset = match TIME_MODE
+						.active_time_offset
+						.cmp(&TIME_MODE.active_time_in_sec)
+					{
 						cmp::Ordering::Less => TIME_MODE.active_time_offset + 1,
 						_ => {
 							TIME_MODE.action_state = TimeModeActionState::Close;
@@ -499,7 +521,10 @@ fn TIMER1_COMPA() {
 					}
 				}
 				TimeModeActionState::Close => {
-					TIME_MODE.delay_time_offset = match TIME_MODE.delay_time_offset.cmp(&TIME_MODE.delay_time_in_sec) {
+					TIME_MODE.delay_time_offset = match TIME_MODE
+						.delay_time_offset
+						.cmp(&TIME_MODE.delay_time_in_sec)
+					{
 						cmp::Ordering::Less => TIME_MODE.delay_time_offset + 1,
 						_ => {
 							TIME_MODE.action_state = TimeModeActionState::Open;
