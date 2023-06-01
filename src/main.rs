@@ -274,7 +274,7 @@ fn main() -> ! {
 						TIME_MODE.delay_time_in_sec =
 							u32::from_be_bytes([message[5], message[6], message[7], message[8]]);
 						TIME_MODE.enabled = true;
-						for &byte in b"ok" {
+						for &byte in b"enable_ok" {
 							serial1.write_byte(byte);
 						}
 					} else if message.starts_with("d".as_bytes()) {
