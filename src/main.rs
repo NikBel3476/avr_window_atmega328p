@@ -12,7 +12,7 @@ use arduino_hal::{
 use atmega_hal::{usart::BaudrateExt};
 use core::{
 	mem,
-	sync::atomic::{AtomicBool, Ordering},
+	sync::atomic::{AtomicBool, Ordering}, cmp,
 };
 use ebyte_e32::{
 	mode::{Mode, Normal, Program},
@@ -51,12 +51,34 @@ use panic_halt as _;
 // 	serial0: *mut Usart<Atmega, USART0, Pin<Input, PE0>, Pin<Output, PE1>, MHz16>
 // }
 
+enum TimeModeActionState {
+	Open,
+	Close
+}
+
+struct TimeMode {
+	active_time_in_sec: u32,
+	delay_time_in_sec: u32,
+	active_time_offset: u32,
+	delay_time_offset: u32,
+	enabled: bool,
+	action_state: TimeModeActionState
+}
+
 static mut WINDOW_IS_OPEN: AtomicBool = AtomicBool::new(false);
 static mut WINDOW_IS_CLOSE: AtomicBool = AtomicBool::new(true);
 static mut WINDOW_IS_MOVING: AtomicBool = AtomicBool::new(false);
 // static mut LED: mem::MaybeUninit<Pin<Output, port::PB5>> = mem::MaybeUninit::uninit();
 // static mut GLOBAL_STATE: mem::MaybeUninit<GlobalState> = mem::MaybeUninit::uninit();
 static mut GLOBAL_TIME_IN_SEC: u32 = 0;
+static mut TIME_MODE: TimeMode = TimeMode {
+	active_time_in_sec: 0,
+	delay_time_in_sec: 0,
+	active_time_offset: 0,
+	delay_time_offset: 0,
+	enabled: false,
+	action_state: TimeModeActionState::Open
+};
 
 #[arduino_hal::entry]
 fn main() -> ! {
@@ -199,7 +221,7 @@ fn main() -> ! {
 						message_received = false;
 					}
 				}
-				if byte.to_ascii_lowercase() as char == ';' {
+				if byte as char == ';' {
 					message_received = true;
 				}
 			}
@@ -207,21 +229,21 @@ fn main() -> ! {
 
 		if message_received {
 			match receiving_message[0] as char {
-				'o' => unsafe {
+				'o' => unsafe { // open window
 					if WINDOW_IS_CLOSE.load(Ordering::SeqCst) {
 						WINDOW_IS_MOVING.store(true, Ordering::SeqCst);
 						engine_direction.set_high();
 						engine_disable.set_low();
 					}
 				},
-				'c' => unsafe {
+				'c' => unsafe { // close window
 					if WINDOW_IS_OPEN.load(Ordering::SeqCst) {
 						WINDOW_IS_MOVING.store(true, Ordering::SeqCst);
 						engine_direction.set_low();
 						engine_disable.set_low();
 					}
 				},
-				's' => unsafe {
+				's' => unsafe { // get state
 					if WINDOW_IS_OPEN.load(Ordering::SeqCst) && !WINDOW_IS_CLOSE.load(Ordering::SeqCst) {
 						serial1.write_byte('o' as u8);
 					}
@@ -229,13 +251,13 @@ fn main() -> ! {
 						serial1.write_byte('c' as u8);
 					}
 				},
-				't' => unsafe {
+				't' => unsafe { // get time
 					serial1.write_byte('t' as u8);
 					for byte in GLOBAL_TIME_IN_SEC.to_be_bytes() {
 						serial1.write_byte(byte);
 					}
 				},
-				'u' => unsafe {
+				'u' => unsafe { // update global time
 					GLOBAL_TIME_IN_SEC = u32::from_be_bytes([
 						receiving_message[1],
 						receiving_message[2],
@@ -244,6 +266,45 @@ fn main() -> ! {
 					]);
 					for &byte in b"ok" {
 						serial1.write_byte(byte);
+					}
+				},
+				'r' => unsafe { // set time mode
+					TIME_MODE.active_time_in_sec = u32::from_be_bytes([
+						receiving_message[1],
+						receiving_message[2],
+						receiving_message[3],
+						receiving_message[4],
+					]);
+					TIME_MODE.delay_time_in_sec = u32::from_be_bytes([
+						receiving_message[5],
+						receiving_message[6],
+						receiving_message[7],
+						receiving_message[8],
+					]);
+					TIME_MODE.enabled = true;
+					for &byte in b"ok" {
+						serial1.write_byte(byte);
+					}
+				},
+				'd' => unsafe { // disable time mode
+					TIME_MODE.enabled = false;
+					for &byte in b"disable_ok" {
+						serial1.write_byte(byte);
+					}
+				},
+				'e' => unsafe { // enable time mode
+					match TIME_MODE.active_time_in_sec != 0 && TIME_MODE.active_time_in_sec != 0 {
+						true => {
+							TIME_MODE.enabled = true;
+							for &byte in b"enable_ok" {
+								serial1.write_byte(byte);
+							}
+						}
+						false => {
+							for &byte in b"enable_err" {
+								serial1.write_byte(byte);
+							}
+						}
 					}
 				}
 				_ => {}
@@ -331,6 +392,25 @@ fn main() -> ! {
 		// }
 
 		unsafe {
+			if TIME_MODE.enabled {
+				match TIME_MODE.action_state {
+					TimeModeActionState::Open => {
+						if WINDOW_IS_CLOSE.load(Ordering::SeqCst) {
+							WINDOW_IS_MOVING.store(true, Ordering::SeqCst);
+							engine_direction.set_high();
+							engine_disable.set_low();
+						}
+					}
+					TimeModeActionState::Close => {
+						if WINDOW_IS_OPEN.load(Ordering::SeqCst) {
+							WINDOW_IS_MOVING.store(true, Ordering::SeqCst);
+							engine_direction.set_low();
+							engine_disable.set_low();
+						}
+					}
+				}
+			}
+
 			if WINDOW_IS_CLOSE.load(Ordering::SeqCst) && open_sensor.is_high() {
 				delay_ms(10);
 				if open_sensor.is_high() {
@@ -406,12 +486,35 @@ pub fn reg_timer(timer1: &TC1) {
 #[avr_device::interrupt(atmega328p)]
 fn TIMER1_COMPA() {
 	unsafe {
-		GLOBAL_TIME_IN_SEC = match GLOBAL_TIME_IN_SEC == 24 * 60 * 60 - 1 {
-			true => 0,
-			false => GLOBAL_TIME_IN_SEC + 1
+		GLOBAL_TIME_IN_SEC = match GLOBAL_TIME_IN_SEC.cmp(&(24 * 60 * 60 - 1)) {
+			cmp::Ordering::Less => GLOBAL_TIME_IN_SEC + 1,
+			_ => 0
 		};
+		if TIME_MODE.enabled {
+			match TIME_MODE.action_state {
+				TimeModeActionState::Open => {
+					TIME_MODE.active_time_offset = match TIME_MODE.active_time_offset.cmp(&TIME_MODE.active_time_in_sec) {
+						cmp::Ordering::Less => TIME_MODE.active_time_offset + 1,
+						_ => {
+							TIME_MODE.action_state = TimeModeActionState::Close;
+							0
+						}
+					}
+				}
+				TimeModeActionState::Close => {
+					TIME_MODE.delay_time_offset = match TIME_MODE.delay_time_offset.cmp(&TIME_MODE.delay_time_in_sec) {
+						cmp::Ordering::Less => TIME_MODE.delay_time_offset + 1,
+						_ => {
+							TIME_MODE.action_state = TimeModeActionState::Open;
+							0
+						}
+					}
+				}
+			}
+			TIME_MODE.active_time_offset += 1;
+		}
+		(*atmega_hal::pac::TC1::PTR).tcnt1.write(|w| w.bits(0))
 	}
-	unsafe { (*atmega_hal::pac::TC1::PTR).tcnt1.write(|w| w.bits(0)) }
 }
 
 // #[no_mangle]
