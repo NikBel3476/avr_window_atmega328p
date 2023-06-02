@@ -54,6 +54,25 @@ use panic_halt as _;
 const MESSAGE_SEPARATOR: u8 = ';' as u8;
 const SECONDS_IN_DAY: u32 = 24 * 60 * 60;
 
+const OPEN_WINDOW_REQUEST: &[u8; 1] = b"o";
+const CLOSE_WINDOW_REQUEST: &[u8; 1] = b"c";
+const GET_STATE_REQUEST: &[u8; 1] = b"s";
+const GET_GLOBAL_TIME_REQUEST: &[u8; 1] = b"t";
+const UPDATE_GLOBAL_TIME_REQUEST: &[u8; 1] = b"u";
+const SET_TIME_MODE_REQUEST: &[u8; 1] = b"r";
+const ENABLE_SCHEDULE_REQUEST: &[u8; 15] = b"enable_schedule";
+const DISABLE_SCHEDULE_REQUEST: &[u8; 16] = b"disable_schedule";
+const DISABLE_TIME_MODE_REQUEST: &[u8; 1] = b"d";
+const ENABLE_TIME_MODE_REQUEST: &[u8; 1] = b"e";
+const GET_TIME_MODE_RANGE_REQUEST: &[u8; 1] = b"a";
+const SET_SCHEDULE_REQUEST: &[u8; 1] = b"h";
+const GET_SCHEDULE_TIME: &[u8; 1] = b"b";
+
+const WINDOW_OPENED_RESPONSE: u8 = b'o';
+const WINDOW_CLOSED_RESPONSE: u8 = b'c';
+const SET_TIME_OK_RESPONSE: &[u8; 11] = b"set_time_ok";
+const SET_TIME_ERR_RESPONSE: &[u8; 12] = b"set_time_err";
+
 enum TimeModeActionState {
 	ShouldBeOpened,
 	ShouldBeClosed,
@@ -250,38 +269,48 @@ fn main() -> ! {
 			{
 				let message = &receiving_message[0..length];
 				unsafe {
-					if message.starts_with("o".as_bytes()) {
+					if message.starts_with(OPEN_WINDOW_REQUEST) {
 						// open window
 						try_open(&mut engine_inverse_pin, &mut engine_direction_pin);
-					} else if message.starts_with("c".as_bytes()) {
+					} else if message.starts_with(CLOSE_WINDOW_REQUEST) {
 						// close window
 						try_close(&mut engine_inverse_pin, &mut engine_direction_pin);
-					} else if message.starts_with("s".as_bytes()) {
+					} else if message.starts_with(GET_STATE_REQUEST) {
 						// get state
 						if WINDOW_IS_OPENED.load(Ordering::SeqCst)
 							&& !WINDOW_IS_CLOSED.load(Ordering::SeqCst)
 						{
-							serial1.write_byte(b'o');
+							serial1.write_byte(WINDOW_OPENED_RESPONSE);
 						}
 						if !WINDOW_IS_OPENED.load(Ordering::SeqCst)
 							&& WINDOW_IS_CLOSED.load(Ordering::SeqCst)
 						{
-							serial1.write_byte(b'c');
+							serial1.write_byte(WINDOW_CLOSED_RESPONSE);
 						}
-					} else if message.starts_with("t".as_bytes()) {
+					} else if message.starts_with(GET_GLOBAL_TIME_REQUEST) {
 						// get time
 						serial1.write_byte(b't');
 						for byte in GLOBAL_TIME_IN_SEC.to_be_bytes() {
 							serial1.write_byte(byte);
 						}
-					} else if message.starts_with("u".as_bytes()) {
+					} else if message.starts_with(UPDATE_GLOBAL_TIME_REQUEST) {
 						// update global time
-						GLOBAL_TIME_IN_SEC =
+						let updated_time =
 							u32::from_be_bytes([message[1], message[2], message[3], message[4]]);
-						for &byte in b"ok" {
-							serial1.write_byte(byte);
+						match updated_time.cmp(&SECONDS_IN_DAY) {
+							cmp::Ordering::Less => {
+								GLOBAL_TIME_IN_SEC = updated_time;
+								for &byte in b"set_time_ok" {
+									serial1.write_byte(byte);
+								}
+							}
+							_ => {
+								for &byte in b"set_time_err" {
+									serial1.write_byte(byte);
+								}
+							}
 						}
-					} else if message.starts_with("r".as_bytes()) {
+					} else if message.starts_with(SET_TIME_MODE_REQUEST) {
 						// set time mode
 						TIME_MODE.active_time_in_sec =
 							u32::from_be_bytes([message[1], message[2], message[3], message[4]]);
@@ -291,19 +320,46 @@ fn main() -> ! {
 						for &byte in b"enable_ok" {
 							serial1.write_byte(byte);
 						}
-					} else if message.starts_with("d".as_bytes()) {
+					} else if message.starts_with(DISABLE_SCHEDULE_REQUEST) {
+						SCHEDULE.enabled = false;
+						for &byte in b"schedule_disabled" {
+							serial1.write_byte(byte);
+						}
+					} else if message.starts_with(ENABLE_SCHEDULE_REQUEST) {
+						match SCHEDULE.open_time.eq(&SCHEDULE.close_time) {
+							true => {
+								for &byte in b"schedule_err" {
+									serial1.write_byte(byte);
+								}
+							}
+							false => {
+								SCHEDULE.enabled = true;
+								for &byte in b"schedule_enabled" {
+									serial1.write_byte(byte);
+								}
+								delay_ms(10);
+								for &byte in b"disable_ok" {
+									serial1.write_byte(byte);
+								}
+							}
+						}
+					} else if message.starts_with(DISABLE_TIME_MODE_REQUEST) {
 						// disable time mode
 						TIME_MODE.enabled = false;
 						for &byte in b"disable_ok" {
 							serial1.write_byte(byte);
 						}
-					} else if message.starts_with("e".as_bytes()) {
+					} else if message.starts_with(ENABLE_TIME_MODE_REQUEST) {
 						// enable time mode
 						match TIME_MODE.active_time_in_sec > 0 && TIME_MODE.active_time_in_sec > 0 {
 							true => {
 								TIME_MODE.enabled = true;
 								SCHEDULE.enabled = false;
 								for &byte in b"enable_ok" {
+									serial1.write_byte(byte);
+								}
+								delay_ms(10);
+								for &byte in b"schedule_disabled" {
 									serial1.write_byte(byte);
 								}
 							}
@@ -313,27 +369,30 @@ fn main() -> ! {
 								}
 							}
 						}
-					} else if message.starts_with("a".as_bytes()) {
-						// get range time
+					} else if message.starts_with(GET_TIME_MODE_RANGE_REQUEST) {
+						// get time range
 						for byte in TIME_MODE.active_time_in_sec.to_be_bytes() {
 							serial1.write_byte(byte);
 						}
 						for byte in TIME_MODE.delay_time_in_sec.to_be_bytes() {
 							serial1.write_byte(byte);
 						}
-					} else if message.starts_with(b"h") {
-						// set time mode
+					} else if message.starts_with(SET_SCHEDULE_REQUEST) {
+						// set schedule
 						let open_time =
 							u32::from_be_bytes([message[1], message[2], message[3], message[4]]);
 						let close_time =
 							u32::from_be_bytes([message[5], message[6], message[7], message[8]]);
-						match open_time < SECONDS_IN_DAY - 1 && close_time < SECONDS_IN_DAY - 1 {
+						match open_time < SECONDS_IN_DAY - 1
+							&& close_time < SECONDS_IN_DAY - 1
+							&& !open_time.eq(&close_time)
+						{
 							true => {
 								SCHEDULE.open_time = open_time;
 								SCHEDULE.close_time = close_time;
 								SCHEDULE.enabled = true;
 								TIME_MODE.enabled = false;
-								for &byte in b"schedule_ok" {
+								for &byte in b"schedule_enabled" {
 									serial1.write_byte(byte);
 								}
 							}
@@ -343,7 +402,7 @@ fn main() -> ! {
 								}
 							}
 						}
-					} else if message.starts_with(b"b") {
+					} else if message.starts_with(GET_SCHEDULE_TIME) {
 						// get schedule state
 						for byte in SCHEDULE.open_time.to_be_bytes() {
 							serial1.write_byte(byte);
@@ -488,6 +547,7 @@ fn main() -> ! {
 	}
 }
 
+#[inline]
 pub fn try_open<P1, P2>(
 	engine_inverse_pin: &mut Pin<Output, P1>,
 	engine_direction_pin: &mut Pin<Output, P2>,
@@ -504,6 +564,7 @@ pub fn try_open<P1, P2>(
 	}
 }
 
+#[inline]
 pub fn try_close<P1, P2>(
 	engine_inverse_pin: &mut Pin<Output, P1>,
 	engine_direction_pin: &mut Pin<Output, P2>,
@@ -567,6 +628,7 @@ fn TIMER1_COMPA() {
 			cmp::Ordering::Less => GLOBAL_TIME_IN_SEC + 1,
 			_ => 0,
 		};
+
 		if TIME_MODE.enabled {
 			match TIME_MODE.action_state {
 				TimeModeActionState::ShouldBeOpened => {
@@ -595,15 +657,28 @@ fn TIMER1_COMPA() {
 				}
 			}
 		}
+
 		if SCHEDULE.enabled {
-			SCHEDULE.action_state = match GLOBAL_TIME_IN_SEC.cmp(&SCHEDULE.open_time)
-				== cmp::Ordering::Greater
-				&& GLOBAL_TIME_IN_SEC.cmp(&SCHEDULE.close_time) == cmp::Ordering::Less
-			{
-				true => TimeModeActionState::ShouldBeOpened,
-				false => TimeModeActionState::ShouldBeClosed,
+			match SCHEDULE.open_time.cmp(&SCHEDULE.close_time) {
+				cmp::Ordering::Less => {
+					SCHEDULE.action_state = match GLOBAL_TIME_IN_SEC >= SCHEDULE.open_time
+						&& GLOBAL_TIME_IN_SEC <= SCHEDULE.close_time
+					{
+						true => TimeModeActionState::ShouldBeOpened,
+						false => TimeModeActionState::ShouldBeClosed,
+					}
+				}
+				_ => {
+					SCHEDULE.action_state = match GLOBAL_TIME_IN_SEC >= SCHEDULE.open_time
+						|| GLOBAL_TIME_IN_SEC <= SCHEDULE.close_time
+					{
+						true => TimeModeActionState::ShouldBeOpened,
+						false => TimeModeActionState::ShouldBeClosed,
+					}
+				}
 			}
 		}
+
 		(*atmega_hal::pac::TC1::PTR).tcnt1.write(|w| w.bits(0))
 	}
 }
