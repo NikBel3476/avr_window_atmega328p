@@ -52,10 +52,11 @@ use panic_halt as _;
 // }
 
 const MESSAGE_SEPARATOR: u8 = ';' as u8;
+const SECONDS_IN_DAY: u32 = 24 * 60 * 60;
 
 enum TimeModeActionState {
-	Open,
-	Close,
+	ShouldBeOpened,
+	ShouldBeClosed,
 }
 
 struct TimeMode {
@@ -63,6 +64,13 @@ struct TimeMode {
 	delay_time_in_sec: u32,
 	active_time_offset: u32,
 	delay_time_offset: u32,
+	enabled: bool,
+	action_state: TimeModeActionState,
+}
+
+struct Schedule {
+	open_time: u32,
+	close_time: u32,
 	enabled: bool,
 	action_state: TimeModeActionState,
 }
@@ -79,7 +87,13 @@ static mut TIME_MODE: TimeMode = TimeMode {
 	active_time_offset: 0,
 	delay_time_offset: 0,
 	enabled: false,
-	action_state: TimeModeActionState::Open,
+	action_state: TimeModeActionState::ShouldBeOpened,
+};
+static mut SCHEDULE: Schedule = Schedule {
+	open_time: 0,
+	close_time: 0,
+	enabled: false,
+	action_state: TimeModeActionState::ShouldBeOpened,
 };
 
 #[arduino_hal::entry]
@@ -285,10 +299,10 @@ fn main() -> ! {
 						}
 					} else if message.starts_with("e".as_bytes()) {
 						// enable time mode
-						match TIME_MODE.active_time_in_sec != 0 && TIME_MODE.active_time_in_sec != 0
-						{
+						match TIME_MODE.active_time_in_sec > 0 && TIME_MODE.active_time_in_sec > 0 {
 							true => {
 								TIME_MODE.enabled = true;
+								SCHEDULE.enabled = false;
 								for &byte in b"enable_ok" {
 									serial1.write_byte(byte);
 								}
@@ -298,6 +312,44 @@ fn main() -> ! {
 									serial1.write_byte(byte);
 								}
 							}
+						}
+					} else if message.starts_with("a".as_bytes()) {
+						// get range time
+						for byte in TIME_MODE.active_time_in_sec.to_be_bytes() {
+							serial1.write_byte(byte);
+						}
+						for byte in TIME_MODE.delay_time_in_sec.to_be_bytes() {
+							serial1.write_byte(byte);
+						}
+					} else if message.starts_with(b"h") {
+						// set time mode
+						let open_time =
+							u32::from_be_bytes([message[1], message[2], message[3], message[4]]);
+						let close_time =
+							u32::from_be_bytes([message[5], message[6], message[7], message[8]]);
+						match open_time < SECONDS_IN_DAY - 1 && close_time < SECONDS_IN_DAY - 1 {
+							true => {
+								SCHEDULE.open_time = open_time;
+								SCHEDULE.close_time = close_time;
+								SCHEDULE.enabled = true;
+								TIME_MODE.enabled = false;
+								for &byte in b"schedule_ok" {
+									serial1.write_byte(byte);
+								}
+							}
+							false => {
+								for &byte in b"schedule_err" {
+									serial1.write_byte(byte);
+								}
+							}
+						}
+					} else if message.starts_with(b"b") {
+						// get schedule state
+						for byte in SCHEDULE.open_time.to_be_bytes() {
+							serial1.write_byte(byte);
+						}
+						for byte in SCHEDULE.close_time.to_be_bytes() {
+							serial1.write_byte(byte);
 						}
 					}
 				}
@@ -387,11 +439,20 @@ fn main() -> ! {
 		unsafe {
 			if TIME_MODE.enabled {
 				match TIME_MODE.action_state {
-					TimeModeActionState::Open => {
-						try_open(&mut engine_inverse_pin, &mut engine_direction_pin)
+					TimeModeActionState::ShouldBeOpened => {
+						try_open(&mut engine_inverse_pin, &mut engine_direction_pin);
 					}
-					TimeModeActionState::Close => {
-						try_close(&mut engine_inverse_pin, &mut engine_direction_pin)
+					TimeModeActionState::ShouldBeClosed => {
+						try_close(&mut engine_inverse_pin, &mut engine_direction_pin);
+					}
+				}
+			} else if SCHEDULE.enabled {
+				match SCHEDULE.action_state {
+					TimeModeActionState::ShouldBeOpened => {
+						try_open(&mut engine_inverse_pin, &mut engine_direction_pin);
+					}
+					TimeModeActionState::ShouldBeClosed => {
+						try_close(&mut engine_inverse_pin, &mut engine_direction_pin);
 					}
 				}
 			}
@@ -412,7 +473,7 @@ fn main() -> ! {
 				if close_sensor.is_high() {
 					WINDOW_IS_OPENED.store(false, Ordering::SeqCst);
 					WINDOW_IS_CLOSED.store(true, Ordering::SeqCst);
-					WINDOW_IS_OPENING.store(false, Ordering::SeqCst);
+					WINDOW_IS_CLOSING.store(false, Ordering::SeqCst);
 					engine_inverse_pin.set_high();
 					engine_direction_pin.set_high();
 				}
@@ -502,38 +563,46 @@ pub fn reg_timer(timer1: &TC1) {
 #[avr_device::interrupt(atmega328p)]
 fn TIMER1_COMPA() {
 	unsafe {
-		GLOBAL_TIME_IN_SEC = match GLOBAL_TIME_IN_SEC.cmp(&(24 * 60 * 60 - 1)) {
+		GLOBAL_TIME_IN_SEC = match GLOBAL_TIME_IN_SEC.cmp(&(SECONDS_IN_DAY - 1)) {
 			cmp::Ordering::Less => GLOBAL_TIME_IN_SEC + 1,
 			_ => 0,
 		};
 		if TIME_MODE.enabled {
 			match TIME_MODE.action_state {
-				TimeModeActionState::Open => {
+				TimeModeActionState::ShouldBeOpened => {
 					TIME_MODE.active_time_offset = match TIME_MODE
 						.active_time_offset
 						.cmp(&TIME_MODE.active_time_in_sec)
 					{
 						cmp::Ordering::Less => TIME_MODE.active_time_offset + 1,
 						_ => {
-							TIME_MODE.action_state = TimeModeActionState::Close;
+							TIME_MODE.action_state = TimeModeActionState::ShouldBeClosed;
 							0
 						}
 					}
 				}
-				TimeModeActionState::Close => {
+				TimeModeActionState::ShouldBeClosed => {
 					TIME_MODE.delay_time_offset = match TIME_MODE
 						.delay_time_offset
 						.cmp(&TIME_MODE.delay_time_in_sec)
 					{
 						cmp::Ordering::Less => TIME_MODE.delay_time_offset + 1,
 						_ => {
-							TIME_MODE.action_state = TimeModeActionState::Open;
+							TIME_MODE.action_state = TimeModeActionState::ShouldBeOpened;
 							0
 						}
 					}
 				}
 			}
-			TIME_MODE.active_time_offset += 1;
+		}
+		if SCHEDULE.enabled {
+			SCHEDULE.action_state = match GLOBAL_TIME_IN_SEC.cmp(&SCHEDULE.open_time)
+				== cmp::Ordering::Greater
+				&& GLOBAL_TIME_IN_SEC.cmp(&SCHEDULE.close_time) == cmp::Ordering::Less
+			{
+				true => TimeModeActionState::ShouldBeOpened,
+				false => TimeModeActionState::ShouldBeClosed,
+			}
 		}
 		(*atmega_hal::pac::TC1::PTR).tcnt1.write(|w| w.bits(0))
 	}
