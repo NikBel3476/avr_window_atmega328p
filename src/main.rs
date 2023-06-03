@@ -51,7 +51,7 @@ use panic_halt as _;
 // 	serial0: *mut Usart<Atmega, USART0, Pin<Input, PE0>, Pin<Output, PE1>, MHz16>
 // }
 
-const MESSAGE_SEPARATOR: u8 = ';' as u8;
+const MESSAGE_SEPARATOR: u8 = b';';
 const SECONDS_IN_DAY: u32 = 24 * 60 * 60;
 
 const OPEN_WINDOW_REQUEST: &[u8; 1] = b"o";
@@ -72,6 +72,12 @@ const WINDOW_OPENED_RESPONSE: u8 = b'o';
 const WINDOW_CLOSED_RESPONSE: u8 = b'c';
 const SET_TIME_OK_RESPONSE: &[u8; 11] = b"set_time_ok";
 const SET_TIME_ERR_RESPONSE: &[u8; 12] = b"set_time_err";
+const SCHEDULE_ENABLED_RESPONSE: &[u8; 16] = b"schedule_enabled";
+const SHCEDULE_ERR_RESPONSE: &[u8; 12] = b"schedule_err";
+const SHCEDULE_DISABLED_RESPONSE: &[u8; 17] = b"schedule_disabled";
+const TIME_MODE_ENABLED_OK_RESPONSE: &[u8; 9] = b"enable_ok";
+const TIME_MODE_ENABLED_ERR_RESPONSE: &[u8; 10] = b"enable_err";
+const TIME_MODE_DISABLED_RESPONSE: &[u8; 10] = b"disable_ok";
 
 enum TimeModeActionState {
 	ShouldBeOpened,
@@ -256,7 +262,7 @@ fn main() -> ! {
 						message_received = false;
 					}
 				}
-				if byte as char == ';' {
+				if byte == MESSAGE_SEPARATOR {
 					message_received = true;
 				}
 			}
@@ -300,12 +306,12 @@ fn main() -> ! {
 						match updated_time.cmp(&SECONDS_IN_DAY) {
 							cmp::Ordering::Less => {
 								GLOBAL_TIME_IN_SEC = updated_time;
-								for &byte in b"set_time_ok" {
+								for &byte in SET_TIME_OK_RESPONSE {
 									serial1.write_byte(byte);
 								}
 							}
 							_ => {
-								for &byte in b"set_time_err" {
+								for &byte in SET_TIME_ERR_RESPONSE {
 									serial1.write_byte(byte);
 								}
 							}
@@ -317,28 +323,28 @@ fn main() -> ! {
 						TIME_MODE.delay_time_in_sec =
 							u32::from_be_bytes([message[5], message[6], message[7], message[8]]);
 						TIME_MODE.enabled = true;
-						for &byte in b"enable_ok" {
+						for &byte in TIME_MODE_ENABLED_OK_RESPONSE {
 							serial1.write_byte(byte);
 						}
 					} else if message.starts_with(DISABLE_SCHEDULE_REQUEST) {
 						SCHEDULE.enabled = false;
-						for &byte in b"schedule_disabled" {
+						for &byte in SHCEDULE_DISABLED_RESPONSE {
 							serial1.write_byte(byte);
 						}
 					} else if message.starts_with(ENABLE_SCHEDULE_REQUEST) {
 						match SCHEDULE.open_time.eq(&SCHEDULE.close_time) {
 							true => {
-								for &byte in b"schedule_err" {
+								for &byte in SHCEDULE_ERR_RESPONSE {
 									serial1.write_byte(byte);
 								}
 							}
 							false => {
 								SCHEDULE.enabled = true;
-								for &byte in b"schedule_enabled" {
+								for &byte in SCHEDULE_ENABLED_RESPONSE {
 									serial1.write_byte(byte);
 								}
 								delay_ms(10);
-								for &byte in b"disable_ok" {
+								for &byte in TIME_MODE_DISABLED_RESPONSE {
 									serial1.write_byte(byte);
 								}
 							}
@@ -346,7 +352,7 @@ fn main() -> ! {
 					} else if message.starts_with(DISABLE_TIME_MODE_REQUEST) {
 						// disable time mode
 						TIME_MODE.enabled = false;
-						for &byte in b"disable_ok" {
+						for &byte in TIME_MODE_DISABLED_RESPONSE {
 							serial1.write_byte(byte);
 						}
 					} else if message.starts_with(ENABLE_TIME_MODE_REQUEST) {
@@ -355,16 +361,16 @@ fn main() -> ! {
 							true => {
 								TIME_MODE.enabled = true;
 								SCHEDULE.enabled = false;
-								for &byte in b"enable_ok" {
+								for &byte in TIME_MODE_ENABLED_OK_RESPONSE {
 									serial1.write_byte(byte);
 								}
 								delay_ms(10);
-								for &byte in b"schedule_disabled" {
+								for &byte in SHCEDULE_DISABLED_RESPONSE {
 									serial1.write_byte(byte);
 								}
 							}
 							false => {
-								for &byte in b"enable_err" {
+								for &byte in TIME_MODE_ENABLED_ERR_RESPONSE {
 									serial1.write_byte(byte);
 								}
 							}
@@ -392,12 +398,12 @@ fn main() -> ! {
 								SCHEDULE.close_time = close_time;
 								SCHEDULE.enabled = true;
 								TIME_MODE.enabled = false;
-								for &byte in b"schedule_enabled" {
+								for &byte in SCHEDULE_ENABLED_RESPONSE {
 									serial1.write_byte(byte);
 								}
 							}
 							false => {
-								for &byte in b"schedule_err" {
+								for &byte in SHCEDULE_ERR_RESPONSE {
 									serial1.write_byte(byte);
 								}
 							}
