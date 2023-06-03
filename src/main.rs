@@ -165,14 +165,10 @@ fn main() -> ! {
 						try_close(&mut engine_inverse_pin, &mut engine_direction_pin);
 					} else if message.starts_with(GET_STATE_REQUEST) {
 						// get state
-						if WINDOW_IS_OPENED.load(Ordering::SeqCst)
-							&& !WINDOW_IS_CLOSED.load(Ordering::SeqCst)
-						{
+						if WINDOW_IS_OPENED.load(Ordering::SeqCst) {
 							serial1.write_byte(WINDOW_OPENED_RESPONSE);
 						}
-						if !WINDOW_IS_OPENED.load(Ordering::SeqCst)
-							&& WINDOW_IS_CLOSED.load(Ordering::SeqCst)
-						{
+						if WINDOW_IS_CLOSED.load(Ordering::SeqCst) {
 							serial1.write_byte(WINDOW_CLOSED_RESPONSE);
 						}
 					} else if message.starts_with(GET_GLOBAL_TIME_REQUEST) {
@@ -205,7 +201,12 @@ fn main() -> ! {
 						TIME_MODE.delay_time_in_sec =
 							u32::from_be_bytes([message[5], message[6], message[7], message[8]]);
 						TIME_MODE.enabled = true;
+						SCHEDULE.enabled = false;
 						for &byte in TIME_MODE_ENABLED_OK_RESPONSE {
+							serial1.write_byte(byte);
+						}
+						delay_ms(10);
+						for &byte in SHCEDULE_DISABLED_RESPONSE {
 							serial1.write_byte(byte);
 						}
 					} else if message.starts_with(DISABLE_SCHEDULE_REQUEST) {
@@ -222,6 +223,7 @@ fn main() -> ! {
 							}
 							false => {
 								SCHEDULE.enabled = true;
+								TIME_MODE.enabled = false;
 								for &byte in SCHEDULE_ENABLED_RESPONSE {
 									serial1.write_byte(byte);
 								}
@@ -281,6 +283,10 @@ fn main() -> ! {
 								SCHEDULE.enabled = true;
 								TIME_MODE.enabled = false;
 								for &byte in SCHEDULE_ENABLED_RESPONSE {
+									serial1.write_byte(byte);
+								}
+								delay_ms(10);
+								for &byte in TIME_MODE_DISABLED_RESPONSE {
 									serial1.write_byte(byte);
 								}
 							}
