@@ -493,17 +493,3 @@ fn TIMER1_COMPA() {
 		(*atmega_hal::pac::TC1::PTR).tcnt1.write(|w| w.bits(0))
 	}
 }
-
-// #[no_mangle]
-// pub unsafe extern "avr-interrupt" fn __vector_17() {
-// 	// port::B5::toggle();
-// 	// port::E0::toggle();
-// 	// (*arduino_hal::pac::USART0::PTR).udr0.as_ptr()
-// }
-
-// #[avr_device::interrupt(atmega128rfa1)]
-// fn USART1_TX() {
-// 	let led = unsafe { &mut *LED.as_mut_ptr() };
-
-// 	led.toggle();
-// }
