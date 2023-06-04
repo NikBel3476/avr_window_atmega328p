@@ -44,12 +44,12 @@ const WINDOW_OPENED_RESPONSE: u8 = b'o';
 const WINDOW_CLOSED_RESPONSE: u8 = b'c';
 const SET_TIME_OK_RESPONSE: &[u8; 11] = b"set_time_ok";
 const SET_TIME_ERR_RESPONSE: &[u8; 12] = b"set_time_err";
-const SCHEDULE_ENABLED_RESPONSE: &[u8; 16] = b"schedule_enabled";
-const SHCEDULE_ERR_RESPONSE: &[u8; 12] = b"schedule_err";
-const SHCEDULE_DISABLED_RESPONSE: &[u8; 17] = b"schedule_disabled";
 const TIME_MODE_ENABLED_OK_RESPONSE: &[u8; 9] = b"enable_ok";
 const TIME_MODE_ENABLED_ERR_RESPONSE: &[u8; 10] = b"enable_err";
 const TIME_MODE_DISABLED_RESPONSE: &[u8; 10] = b"disable_ok";
+const SCHEDULE_ENABLED_RESPONSE: &[u8; 16] = b"schedule_enabled";
+const SHCEDULE_ERR_RESPONSE: &[u8; 12] = b"schedule_err";
+const SHCEDULE_DISABLED_RESPONSE: &[u8; 17] = b"schedule_disabled";
 
 enum TimeModeActionState {
 	ShouldBeOpened,
