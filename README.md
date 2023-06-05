@@ -27,7 +27,7 @@ each signal must end with ';' char
 | get schedule time |         'b'         |                    8 bytes \*(5)                    |
 
 \*(1) o - open, c - close  
-\*(2) 4 bytes is u32 time value  
-\*(3) set_time_err will be sended if
-\*(4) the first 4 bytes - time in open position, the second 4 bytes - time in close position  
+\*(2) 4 bytes is u32 time value in seconds  
+\*(3) set_time_err will be sended if time value >= 86400 (i.e. greater than 23:59:59)  
+\*(4) the first 4 bytes - time in opened position, the second 4 bytes - time in closed position  
 \*(5) the first 4 bytes - time to open, the second 4 bytes - time to close
